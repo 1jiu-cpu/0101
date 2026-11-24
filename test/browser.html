@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CircuitLab 浏览器验收</title>
+<style>
+  body { margin: 0; font: 14px/1.6 system-ui, sans-serif; background: #faf8f3; color: #342e28; }
+  header { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; padding: .65rem 1rem; }
+  button { padding: .35rem .65rem; background: #fff; border: 1px solid #dacdc0; border-radius: .4rem; cursor: pointer; }
+  table { margin: 0 1rem .65rem; border-collapse: collapse; }
+  th, td { padding: .15rem .5rem; border: 1px solid #e5dacd; text-align: left; }
+  iframe { width: 100%; height: 79vh; border: 1px solid #e5dacd; border-inline: 0; }
+</style>
+<header>
+  <strong>图片识别与文件流程验收</strong>
+  <button id="evaluate">测量真实图片</button>
+  <button id="three-phase">三相端到端验收</button>
+  <button id="image">拖入教材 RC 图</button>
+  <button id="published">拖入独立 RC 图</button>
+  <button id="stress">拖入本地压力图</button>
+  <button id="stress-model">打开压力测试参考工程</button>
+  <button id="roundtrip">测试工程保存与重开</button>
+  <button id="exports">检查导出文件</button>
+  <button id="crossing">载入导线交叉</button>
+  <button id="viewport">切换窄画布</button>
+  <span id="status" role="status"></span>
+</header>
+<div id="results"></div>
+<iframe src="/" title="电路工作台" id="workbench"></iframe>
+<script type="module">
+  import { addElement, compareTopology, empty } from '/src/model.js';
+  import { readImage, recognizePixels } from '/src/recognize.js';
+  import { esc } from '/src/drawing.js';
+
+  const report = document.getElementById('results');
+  const status = document.getElementById('status');
+  const frame = document.getElementById('workbench');
+  if (new URLSearchParams(location.search).has('bundle')) frame.src = '/dist/CircuitLab.html';
+  const fixtures = [
+    { title: 'OpenStax 21.3 · 三阻串联', path: '/test/fixtures/textbook-series.png',
+      net: [['V','a','0g'], ['R','a','b'], ['R','b','c'], ['R','0g','c']] },
+    { title: 'OpenStax 21.21 · 双回路', path: '/test/fixtures/textbook-kirchhoff.png',
+      net: [['V','p','lt'], ['R','lt','l'], ['R','p','r'], ['R','l','r'], ['V','q','l'], ['R','q','rb'], ['R','r','rb']] },
+    { title: 'OpenStax 21.37(a) · 闭合开关 RC', path: '/test/fixtures/textbook-rc.png',
+      net: [['V','a','g'], ['R','a','b'], ['C','b','n'], ['SHORT','g','n']] },
+    { title: '独立发布 · 带负载 RC 滤波器', path: '/.circuitlab/published.png', local: true,
+      net: [['V','a','0'], ['R','a','b',1000], ['C','b','0',1e-7], ['R','b','0',100000], ['GND','0']] },
+  ];
+  const phaseCases = [
+    { title: '用户原图 Δ–Y', file: '.local-stress.png', local: true, supply: 'delta', load: 'wye', volts: 200,
+      angles: [0, -120, -240], ohms: [5 * Math.sqrt(3), 5], amps: 20 / Math.sqrt(3), angle: -60, crossings: 1 },
+    { title: 'Fiore 9.3 例 3 · Y–Y', file: 'fiore-wye-wye.svg', supply: 'wye', load: 'wye', volts: 240,
+      angles: [0, -120, 120], ohms: [40, 30], amps: 4.8, angle: -Math.atan2(30, 40) * 180 / Math.PI, crossings: 0 },
+    { title: 'Fiore 9.3 例 4 · Δ–Y', file: 'fiore-delta-wye.svg', supply: 'delta', load: 'wye', volts: 230,
+      angles: [0, -120, 120], ohms: [200, 0], amps: 230 / (200 * Math.sqrt(3)), angle: -30, crossings: 0 },
+    { title: 'Fiore 9.3 例 5 · Y–Δ', file: 'fiore-wye-delta.svg', supply: 'wye', load: 'delta', volts: 100,
+      angles: [0, -120, 120], ohms: [40, 30], amps: 6, angle: -Math.atan2(30, 40) * 180 / Math.PI, crossings: 1 },
+  ];
+  const wye = [['a', 'n'], ['b', 'n'], ['c', 'n']];
+  const delta = [['a', 'b'], ['b', 'c'], ['c', 'a']];
+  const textRow = row => '<tr>' + row.map(value => '<td>' + esc(value) + '</td>').join('') + '</tr>';
+  async function file(path, local = false) {
+    const response = await fetch(path);
+    if (local && response.status === 404) return null;
+    if (!response.ok) throw Error('样本不可用');
+    const blob = await response.blob();
+    return new File([blob], path.split('/').at(-1), { type: blob.type });
+  }
+  function sendFile(file) {
+    const { contentWindow: target } = frame;
+    const transfer = new target.DataTransfer();
+    transfer.items.add(file);
+    target.document.getElementById('stage').dispatchEvent(new target.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }
+  function savedFile(action) {
+    const target = frame.contentWindow;
+    const anchor = target.HTMLAnchorElement.prototype;
+    const click = anchor.click;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        anchor.click = click;
+        reject(Error('未收到 ' + action + ' 文件'));
+      }, 3500);
+      anchor.click = async function () {
+        clearTimeout(timer);
+        anchor.click = click;
+        try { resolve({ name: this.download, blob: await fetch(this.href).then(r => r.blob()) }); }
+        catch (error) { reject(error); }
+      };
+      const doc = target.document;
+      if (action !== 'save') doc.querySelector('[data-action="export-menu"]').click();
+      doc.querySelector(`[data-action="${action}"]`).click();
+    });
+  }
+  function waitForImport(doc, title) {
+    return new Promise((resolve, reject) => {
+      const finish = (error, button) => {
+        clearTimeout(timer);
+        observer.disconnect();
+        if (error) reject(Error(error));
+        else resolve(button);
+      };
+      const observer = new MutationObserver(() => {
+        const dialog = doc.querySelector('.failed-image');
+        if (dialog) return finish(dialog.previousElementSibling?.textContent || '图片识别失败');
+        const confirm = doc.querySelector('[data-action="confirm-image"]');
+        if (confirm && doc.getElementById('doc-title').textContent === title && doc.getElementById('toast').textContent.startsWith('识别到')) {
+          finish(null, confirm);
+        }
+      });
+      const timer = setTimeout(() => finish('图片导入超时'), 6000);
+      observer.observe(doc.body, { subtree: true, childList: true });
+    });
+  }
+  function permutations(ids) {
+    if (!ids.length) return [[]];
+    return ids.flatMap((id, i) => permutations(ids.filter((_, j) => i !== j)).map(rest => [id, ...rest]));
+  }
+  const wrap = deg => ((deg + 180) % 360 + 360) % 360 - 180;
+  function checkPhaseModel(doc, sample) {
+    const sources = doc.elements.filter(e => e.type === 'V');
+    const loads = doc.elements.filter(e => e.type === 'Z');
+    if (doc.elements.length !== 6 || sources.length !== 3 || loads.length !== 3 || doc.nodes.length !== 4) {
+      throw Error('拓扑不符。识别到 ' + sources.length + ' 个电源、' + loads.length + ' 个复阻抗、' + doc.nodes.length + ' 个节点。');
+    }
+    const samePair = ({ terminals: { p, n } }, a, b) => p === a && n === b;
+    const mappings = permutations(doc.nodes.map(n => n.id))
+      .map(([a, b, c, n]) => ({ a, b, c, n }))
+      .map(nodes => ({ nodes,
+        supply: (sample.supply === 'wye' ? wye : delta).map(([p, n]) => sources.find(e => samePair(e, nodes[p], nodes[n]))),
+        load: (sample.load === 'wye' ? wye : delta).map(([p, n]) => loads.find(e =>
+          samePair(e, nodes[p], nodes[n]) || samePair(e, nodes[n], nodes[p]))),
+      })).filter(({ supply, load }) => [...supply, ...load].every(Boolean));
+    if (!mappings.length) throw Error('三条电源方向或负载接点与人工拓扑不符。');
+    const matches = mappings.find(({ supply, load }) =>
+      supply.every((s, i) => Math.abs(s.ac - sample.volts) < 1e-9 && Math.abs(wrap(s.phase - sample.angles[i])) < 1e-9) &&
+      load.every(e => Math.hypot(e.value - sample.ohms[0], e.reactance - sample.ohms[1]) < 1e-9));
+    if (!matches) throw Error('拓扑通过，电源相量或阻抗数值与人工参数不符。');
+    return matches;
+  }
+  function checkLineCurrents(result, { nodes, load }, sample) {
+    if (result.mode !== 'ac') throw Error('应用未使用交流稳态求解。');
+    const currents = ['a', 'b', 'c'].map((phase, i) => {
+      const node = nodes[phase];
+      let re = 0, im = 0;
+      // Sum current leaving the line into the load. A delta line feeds two windings.
+      for (const e of load) {
+        const branch = result.branches.find(b => b.id === e.id);
+        if (!branch?.current) throw Error('负载支路缺少唯一电流。');
+        const sign = Number(e.terminals.p === node) - Number(e.terminals.n === node);
+        re += sign * branch.current.re;
+        im += sign * branch.current.im;
+      }
+      const expected = (sample.angle + sample.angles[i]) * Math.PI / 180;
+      const angle = wrap(Math.atan2(im, re) * 180 / Math.PI);
+      return { display: Math.hypot(re, im).toFixed(6) + '∠' + (Math.abs(angle + 180) < 1e-9 ? '180.000' : angle.toFixed(3)) + '°',
+        error: Math.hypot(re - sample.amps * Math.cos(expected), im - sample.amps * Math.sin(expected)) };
+    });
+    const max = Math.max(...currents.map(c => c.error));
+    if (!Number.isFinite(max) || max > 1e-8) throw Error('线电流误差 ' + max.toExponential(2) + ' A 未通过。');
+    return [...currents.map(c => c.display), max.toExponential(2)];
+  }
+  document.getElementById('three-phase').onclick = async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    const rows = [];
+    const doc = frame.contentWindow.document;
+    try {
+      for (const sample of phaseCases) {
+        status.textContent = '正在导入和求解 ' + sample.title;
+        try {
+          const image = await file('/test/fixtures/' + sample.file, sample.local);
+          if (!image) {
+            rows.push([sample.title, '—', '—', '—', '—', '—', '跳过（缺少本地图片）']);
+            continue;
+          }
+          const imported = waitForImport(doc, image.name.replace(/\.[^.]+$/, ''));
+          sendFile(image);
+          const confirm = await imported;
+          const saved = JSON.parse(await (await savedFile('save')).blob.text());
+          const match = checkPhaseModel(saved.doc, sample);
+          if (Object.keys(saved.evidence.issues).length) throw Error(Object.values(saved.evidence.issues).join('；'));
+          const crosses = saved.evidence.report.joins.filter(j => j.crossing);
+          if (crosses.length !== sample.crossings || crosses.some(c => c.connected)) throw Error('无结点交叉与原图不符。');
+          confirm.click();
+          doc.querySelector('.header-actions [data-action="run"]').click();
+          if (!doc.querySelector('#panel-content .result-section')) throw Error(doc.querySelector('#panel-content').innerText);
+          const output = await savedFile('report');
+          const published = new DOMParser().parseFromString(await output.blob.text(), 'text/html');
+          const result = JSON.parse([...published.querySelectorAll('details')].find(d => d.firstElementChild.textContent === '完整计算数据').querySelector('pre').textContent);
+          rows.push([sample.title, '通过', ...checkLineCurrents(result, match, sample), '通过']);
+        } catch (error) {
+          rows.push([sample.title, '失败', '—', '—', '—', '—', error.message]);
+        }
+      }
+      const headings = ['样本', '拓扑与标注', 'Iₐ（A）', 'Iᵦ（A）', 'I꜀（A）', '最大误差（A）', '结果'];
+      report.innerHTML = '<table><thead><tr>' + headings.map(h => '<th>' + h + '</th>').join('') +
+        '</tr></thead><tbody>' + rows.map(textRow).join('') + '</tbody></table>';
+      const skipped = rows.filter(r => r.at(-1).startsWith('跳过')).length;
+      const passed = rows.filter(r => r.at(-1) === '通过').length;
+      status.textContent = '三相验收 ' + passed + '/' + (phaseCases.length - skipped) + ' 通过' + (skipped ? '，' + skipped + ' 项跳过' : '');
+    } finally { button.disabled = false; }
+  };
+  function score(reference, detections) {
+    const kinds = reference.map(([kind]) => kind);
+    const truePositives = detections.reduce((sum, d) => {
+      const i = kinds.indexOf(d.type);
+      if (i < 0) return sum;
+      kinds.splice(i, 1);
+      return sum + 1;
+    }, 0);
+    const expectedValues = reference.filter(([, , , value]) => value !== undefined).map(([type, , , value]) => ({ type, value }));
+    const trueValues = detections.reduce((sum, s) => {
+      const i = expectedValues.findIndex(e => e.type === s.type && Math.abs(e.value - s.label?.value) <= Math.abs(e.value) * 1e-8);
+      if (i < 0) return sum;
+      expectedValues.splice(i, 1);
+      return sum + 1;
+    }, 0);
+    return [`${truePositives}/${reference.length} · ${detections.length} 检出`,
+      reference.some(e => e.length === 4) ? `${trueValues}/${trueValues + expectedValues.length}` : '图中无数值',
+      detections.map(s => `${s.type}${s.label?.text ? ' ' + s.label.text : ''}`).join('，')];
+  }
+  document.getElementById('evaluate').onclick = async () => {
+    status.textContent = '正在运行浏览器识别';
+    const rows = [];
+    for (const item of fixtures) {
+      try {
+        const sample = await file(item.path, item.local);
+        if (!sample) {
+          rows.push([item.title, '—', '—', '跳过', '缺少本地图片']);
+          continue;
+        }
+        const { pixels } = await readImage(sample);
+        const recognized = recognizePixels(pixels);
+        const model = empty();
+        for (const [type, p, n] of item.net) addElement(model, type, { terminals: type === 'GND' ? { g: p } : { p, n } });
+        const topology = compareTopology(model, recognized.model, { values: false }) ? '通过' : '需纠正';
+        const [elements, values, detected] = score(item.net, recognized.symbols);
+        rows.push([item.title, elements, values, topology, detected]);
+      } catch (error) { rows.push([item.title, '—', '—', '未完成', error.message]); }
+    }
+    report.innerHTML = '<table><thead><tr><th>样本</th><th>元件</th><th>数值</th><th>整图拓扑</th><th>检测证据</th></tr></thead><tbody>' + rows.map(textRow).join('') + '</tbody></table>';
+    status.textContent = '样本识别完成';
+  };
+  document.getElementById('image').onclick = async () => sendFile(await file(fixtures[2].path));
+  document.getElementById('published').onclick = async () => sendFile(await file(fixtures[3].path));
+  document.getElementById('stress').onclick = async () => {
+    try { sendFile(await file('/test/fixtures/.local-stress.png')); }
+    catch (error) { status.textContent = error.message; }
+  };
+  document.getElementById('stress-model').onclick = async () => {
+    const response = await fetch('/test/fixtures/delta-y-reference.circuit.json');
+    sendFile(new File([await response.blob()], 'delta-y-reference.circuit.json', { type: 'application/json' }));
+  };
+  document.getElementById('viewport').onclick = () => { frame.style.width = frame.style.width ? '' : 'min(640px, 100%)'; };
+  document.getElementById('crossing').onclick = () => {
+    const circuit = empty('导线交叉验收');
+    addElement(circuit, 'R', { terminals: { p: 'left', n: 'horizontal' }, pose: { x: 100, y: 260 } });
+    addElement(circuit, 'R', { terminals: { p: 'horizontal', n: 'right' }, pose: { x: 480, y: 260 } });
+    addElement(circuit, 'R', { terminals: { p: 'top', n: 'vertical' }, pose: { x: 280, y: 90, rotation: 90 } });
+    addElement(circuit, 'R', { terminals: { p: 'vertical', n: 'bottom' }, pose: { x: 280, y: 430, rotation: 90 } });
+    sendFile(new File([JSON.stringify(circuit)], '交叉验收.circuit.json', { type: 'application/json' }));
+  };
+  document.getElementById('roundtrip').onclick = async () => {
+    const target = frame.contentWindow;
+    const doc = target.document;
+    const captured = await savedFile('save');
+    const { blob } = captured;
+    const original = JSON.parse(await blob.text()).doc;
+    doc.querySelector('[data-action="new"]').click();
+    sendFile(new File([blob], captured.name, { type: 'application/json' }));
+    const saved = await new Promise(resolve => {
+      const node = doc.getElementById('toast');
+      const observer = new MutationObserver(() => {
+        if (node.textContent.includes('已打开工程')) { observer.disconnect(); resolve(true); }
+      });
+      observer.observe(node, { subtree: true, childList: true });
+      setTimeout(() => { observer.disconnect(); resolve(false); }, 2000);
+    });
+    const stored = JSON.parse(target.localStorage.getItem('circuitlab.workspace.1')).doc;
+    status.textContent = saved && compareTopology(original, stored, { names: true }) && JSON.stringify(original) === JSON.stringify(stored) ? '工程 JSON 保存、重开及属性一致性通过' : '工程回读需检查';
+  };
+  document.getElementById('exports').onclick = async () => {
+    try {
+      const svg = await savedFile('svg');
+      const xml = await svg.blob.text();
+      const svgDoc = new DOMParser().parseFromString(xml, 'image/svg+xml');
+      if (svgDoc.querySelector('parsererror') || !svgDoc.querySelector('metadata#circuitlab-ir')) throw Error('SVG 矢量图或拓扑嵌入有误');
+      const png = await savedFile('png');
+      const magic = new Uint8Array(await png.blob.slice(0, 8).arrayBuffer());
+      if (magic.join(',') !== '137,80,78,71,13,10,26,10') throw Error('PNG 文件头无效');
+      const html = await savedFile('report');
+      if (!(await html.blob.text()).includes('完整计算数据')) throw Error('报告缺少计算数据');
+      sendFile(new File([svg.blob], svg.name, { type: 'image/svg+xml' }));
+      const targetDoc = frame.contentWindow.document;
+      await new Promise((resolve, reject) => {
+        const node = targetDoc.getElementById('toast');
+        const observer = new MutationObserver(() => {
+          if (node.textContent.includes('已恢复 SVG')) { observer.disconnect(); resolve(); }
+        });
+        observer.observe(node, { subtree: true, childList: true });
+        setTimeout(() => { observer.disconnect(); reject(Error('SVG 拓扑回导有误')); }, 2200);
+      });
+      status.textContent = 'SVG 回导、PNG 和 HTML 报告通过';
+    } catch (error) { status.textContent = error.message; }
+  };
+</script>
+</html>

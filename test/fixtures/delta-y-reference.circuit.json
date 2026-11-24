@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "title": "三相 Δ–Y 压力测试 · 人工校核",
+  "nodes": [
+    { "id": "a", "label": "a / a′", "reference": false },
+    { "id": "b", "label": "b / b′", "reference": false },
+    { "id": "c", "label": "c / c′", "reference": false },
+    { "id": "0", "label": "n", "reference": true }
+  ],
+  "elements": [
+    { "id": "e1", "name": "Va", "type": "V", "terminals": { "p": "a", "n": "b" }, "value": 0, "expression": "0 V", "initial": 0, "phase": 0, "ac": 200, "currentSign": -1, "voltageSign": 1 },
+    { "id": "e2", "name": "Vb", "type": "V", "terminals": { "p": "b", "n": "c" }, "value": 0, "expression": "0 V", "initial": 0, "phase": -120, "ac": 200, "currentSign": -1, "voltageSign": 1 },
+    { "id": "e3", "name": "Vc", "type": "V", "terminals": { "p": "c", "n": "a" }, "value": 0, "expression": "0 V", "initial": 0, "phase": -240, "ac": 200, "currentSign": -1, "voltageSign": 1 },
+    { "id": "e4", "name": "Za", "type": "Z", "terminals": { "p": "a", "n": "0" }, "value": 8.660254037844386, "expression": "5√3 Ω", "reactance": 5, "initial": 0, "phase": 0, "ac": null, "currentSign": 1, "voltageSign": 1 },
+    { "id": "e5", "name": "Zb", "type": "Z", "terminals": { "p": "b", "n": "0" }, "value": 8.660254037844386, "expression": "5√3 Ω", "reactance": 5, "initial": 0, "phase": 0, "ac": null, "currentSign": 1, "voltageSign": 1 },
+    { "id": "e6", "name": "Zc", "type": "Z", "terminals": { "p": "c", "n": "0" }, "value": 8.660254037844386, "expression": "5√3 Ω", "reactance": 5, "initial": 0, "phase": 0, "ac": null, "currentSign": 1, "voltageSign": 1 }
+  ],
+  "couplings": [],
+  "geometry": {
+    "e1": { "x": 310, "y": 160, "rotation": 0, "mirror": false, "locked": true },
+    "e2": { "x": 310, "y": 340, "rotation": 0, "mirror": false, "locked": true },
+    "e3": { "x": 140, "y": 250, "rotation": 270, "mirror": false, "locked": true },
+    "e4": { "x": 720, "y": 120, "rotation": 0, "mirror": false, "locked": true },
+    "e5": { "x": 720, "y": 270, "rotation": 0, "mirror": false, "locked": true },
+    "e6": { "x": 720, "y": 420, "rotation": 0, "mirror": false, "locked": true }
+  },
+  "annotations": [
+    { "x": 142, "y": 500, "text": "Δ 电源：200∠0°、200∠−120°、200∠−240° V" },
+    { "x": 142, "y": 529, "text": "Y 负载：n 仅为计算参考，源绕组电流含未知环流" }
+  ],
+  "history": []
+}
