@@ -4,7 +4,7 @@ import { autoLayout, route } from './layout.js';
 import { esc, exportSvg, scene } from './drawing.js';
 import { exportNetlist, parseDescription, parseNetlist, retype } from './input.js';
 import { acThevenin, branchMethod, graphEquations, impulseResponse, periodic, portParameters, pulseResponse, solve, thevenin, transfer, transient, twoPort } from './analysis.js';
-import { applyReduction, recommendations, reduceAll } from './reduce.js';
+import { applyReduction, recommendations, reduceStepByStep, selectNextReduction } from './reduce.js';
 import { localVision, readImage, rebuildRecognition, recognizePixels } from './recognize.js';
 import { analysisPanel, properties, reductionPanel } from './panels.js';
 import { button, icon, menuItem, partIcon, selectOptions, tool } from './ui.js';
@@ -46,6 +46,7 @@ let toastTimer;
 let analysis = { result: null, error: '' };
 let analysisOptions = defaultOptions();
 let rules = [];
+let preserveNamed = false;
 let clip = null;
 let space = false;
 let autosave = true;
@@ -173,7 +174,7 @@ function renderPanel(preserve = true) {
     `<button type="button" role="tab" data-action="tab" data-id="${id}" aria-selected="${currentTab === id}" class="${currentTab === id ? 'active' : ''}">${icon(glyph, 16)}${label}</button>`).join('');
   $('panel-content').innerHTML = currentTab === 'properties' ? properties(doc, selected, pending, evidence, net)
     : currentTab === 'analysis' ? analysisPanel(doc, analysisOptions, analysis)
-    : reductionPanel(doc, selected, currentStep, (rules = validate(doc).errors.length ? [] : recommendations(doc, [...selected])));
+    : reductionPanel(doc, selected, currentStep, (rules = validate(doc).errors.length ? [] : recommendations(doc, [...selected], { preserveNamed })), { preserveNamed });
   $('panel-content').scrollTop = scroll;
 }
 
@@ -197,7 +198,11 @@ function renderCanvas(recompute = false, updateView = true) {
   const pendingPath = pointerWire ? `<path class="pending-path" d="M${pointerWire.x} ${pointerWire.y} H${ghost.x} V${ghost.y}"/>` : '';
   const box = selectionBox ? `<rect class="selection-box" x="${Math.min(selectionBox.x, selectionBox.to.x)}" y="${Math.min(selectionBox.y, selectionBox.to.y)}"
     width="${Math.abs(selectionBox.x - selectionBox.to.x)}" height="${Math.abs(selectionBox.y - selectionBox.to.y)}"/>` : '';
-  screen.innerHTML = scene(doc, drawing, { interactive: true, selection: selected, pending, uncertain: new Set(Object.keys(evidence?.issues || {})) }) + pendingPath + box;
+  const activeStep = currentTab === 'reduction' && currentStep === doc.history.length - 1 ? doc.history[currentStep] : null;
+  const activeHighlight = activeStep?.highlight
+    ? { elements: activeStep.highlight.afterElements, ports: activeStep.highlight.ports, region: activeStep.highlight.afterRegion, mode: 'after' }
+    : null;
+  screen.innerHTML = scene(doc, drawing, { interactive: true, selection: selected, pending, uncertain: new Set(Object.keys(evidence?.issues || {})), highlight: activeHighlight }) + pendingPath + box;
   $('stage').classList.toggle('no-grid', !grid);
   $('stage').classList.toggle('panning', toolMode === 'hand' || space);
   $('stage').classList.toggle('wiring', toolMode === 'wire');
@@ -763,7 +768,17 @@ function configure(action, target) {
     case 'copy': copy(); break;
     case 'paste': paste(); break;
     case 'reduce': changeTab('reduction'); break;
-    case 'next-reduce':
+    case 'next-reduce': {
+      commit(() => {
+        guardEvidence();
+        const pick = selectNextReduction(doc, { selected: [...selected], preserveNamed });
+        if (!pick.option) throw Error('当前没有可继续安全化简且不产生循环的局部变换。');
+        doc = applyReduction(doc, pick.option).model;
+        selected.clear();
+        currentStep = doc.history.length - 1;
+      }, { topology: true });
+      break;
+    }
     case 'apply-rule': {
       const option = rules[d.index ?? 0];
       if (!option) break;
@@ -777,11 +792,12 @@ function configure(action, target) {
     }
     case 'auto-reduce': commit(() => {
       guardEvidence();
-      const next = reduceAll(doc, [...selected]);
-      if (next === doc) throw Error('当前没有可自动应用的变换。');
-      doc = next;
+      const outcome = reduceStepByStep(doc, { selected: [...selected], preserveNamed });
+      if (!outcome.totalSteps) throw Error('当前没有可继续安全化简且不产生循环的变换。');
+      doc = outcome.model;
       selected.clear();
       currentStep = doc.history.length - 1;
+      toast(`已完成 ${outcome.totalSteps} 步等效化简，每步均通过独立求解器验证`);
     }, { topology: true }); break;
     case 'step-prev':
     case 'step-next': currentStep += action === 'step-prev' ? -1 : 1; renderPanel(); break;
@@ -928,6 +944,11 @@ $('file-input').addEventListener('change', async event => {
 $('panel-content').addEventListener('change', event => {
   const { field, pinName } = event.target.dataset;
   if (!field) return;
+  if (field === 'preserve-named') {
+    preserveNamed = event.target.checked;
+    renderPanel();
+    return;
+  }
   const value = event.target.value;
   if (field.startsWith('a-') || field === 'analysis-mode') {
     if (field === 'analysis-mode') { analysisOptions.mode = value; if (value === 'two') analysisOptions.frequency = '0'; }

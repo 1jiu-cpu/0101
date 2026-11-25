@@ -2,6 +2,7 @@ import { TYPES, formatValue, members, referenceNode, validate } from './model.js
 import { esc, scene } from './drawing.js';
 import { route } from './layout.js';
 import { recommendations } from './reduce.js';
+import { detectTopologies } from './topology.js';
 import { button, tool, icon, partIcon, compact, rectangular, polar, note, table, field, input, select, componentValue, plot } from './ui.js';
 
 const nodeOptions = doc => doc.nodes.map(n => [n.id, n.reference ? `${n.label}（参考地）` : n.label]);
@@ -66,9 +67,11 @@ export function properties(doc, selection, pending, evidence, net) {
       ${tool('net-disconnect', '断开此端口', 'split', '', `data-id="${esc(pin.id)}" data-pin-name="${pin.pin}"`)}</div>`).join('')}</section>`;
   }
   const { errors, warnings } = validate(doc);
+  const topo = doc.elements.length ? detectTopologies(doc) : { summary: [] };
   return `<div class="panel-heading"><h2>电路概览</h2><p>在画布中选中元件以编辑属性。</p></div>
     <div class="stats"><div><strong>${doc.elements.filter(e => e.type !== 'GND').length}</strong><span>元件</span></div>
       <div><strong>${doc.nodes.length}</strong><span>节点</span></div><div><strong>${doc.couplings.length}</strong><span>互感</span></div></div>
+    ${topo.summary.length ? `<section class="panel-section"><h3>识别拓扑</h3>${note(esc(topo.summary.join(' · ')))}</section>` : ''}
     ${issueList(evidence)}<section class="panel-section"><h3>元件列表</h3>${doc.elements.length ? partList(doc) : '<p class="secondary">从元件栏添加元件，或导入电路。</p>'}</section>
     <section class="panel-section"><h3>拓扑状态</h3>
       ${errors.length || warnings.length ? (errors.length ? errors : warnings).slice(0, 4).map(s => note(esc(s), 'warning')).join('') : doc.elements.length ? note('端口和节点引用均有效。') : '<p class="secondary">连接元件后可检查拓扑。</p>'}
@@ -203,24 +206,41 @@ export function analysisPanel(doc, options, state) {
     ${state.error ? note(esc(state.error), 'warning') : state.result ? analysisOutput(mode, state.result) : ''}`;
 }
 
-function mini(doc, title) {
+function mini(doc, title, highlight = null) {
   const result = route(doc);
   const { x, y, bottom, right } = result.bounds;
-  return `<figure class="mini-schematic"><figcaption>${title}</figcaption><svg role="img" aria-label="${title}" viewBox="${x - 20} ${y - 20} ${right - x + 40} ${bottom - y + 40}">${scene(doc, result)}</svg></figure>`;
+  const pad = highlight ? 34 : 20;
+  return `<figure class="mini-schematic"><figcaption>${esc(title)}</figcaption><svg role="img" aria-label="${esc(title)}" viewBox="${x - pad} ${y - pad} ${right - x + pad * 2} ${bottom - y + pad * 2}">${scene(doc, result, { highlight })}</svg></figure>`;
 }
 
-export function reductionPanel(doc, selection, index, cache = recommendations(doc, [...selection])) {
+export function reductionPanel(doc, selection, index, cache = recommendations(doc, [...selection]), { preserveNamed = false } = {}) {
   const step = doc.history[index];
-  return `<div class="panel-heading"><h2>等效化简</h2><p>${selection.size ? '在选中元件中匹配可用变换。' : '选择规则，查看等效关系与验证结果。'}</p></div>
-    <div class="action-row">${button('auto-reduce', '自动化简', 'layers', 'primary', cache.some(r => !['sourceTransform', 'deltaStar'].includes(r.rule)) ? '' : 'disabled')}
-      ${button('next-reduce', '应用首项', 'right', 'outline', cache.length ? '' : 'disabled')}</div>
-    <section class="panel-section"><h3>可用规则</h3>${cache.length ?
+  const beforeHl = step?.highlight
+    ? { elements: step.highlight.beforeElements, ports: step.highlight.ports, region: step.highlight.beforeRegion, mode: 'before', label: '变换前区域' }
+    : null;
+  const afterHl = step?.highlight
+    ? { elements: step.highlight.afterElements, ports: step.highlight.ports, region: step.highlight.afterRegion, mode: 'after', label: '等效替换区域' }
+    : null;
+  const continuityText = step?.continuity && step.continuity.unchangedTotal > 0
+    ? `视觉连续性：未参与变换元件保持原位 ${step.continuity.preservedCount}/${step.continuity.unchangedTotal}（${Math.round(step.continuity.preservedRatio * 100)}%）`
+    : '';
+  return `<div class="panel-heading"><h2>等效化简</h2><p>${selection.size ? '在选中元件中匹配可用局部变换。' : '逐步执行局部等效变换，每步独立求解器验证。'}</p></div>
+    <label class="toggle-row"><input type="checkbox" data-field="preserve-named" ${preserveNamed ? 'checked' : ''}><span>保护命名节点不被消去</span></label>
+    <div class="action-row">${button('auto-reduce', '逐步自动化简', 'layers', 'primary', cache.length ? '' : 'disabled')}
+      ${button('next-reduce', '推荐单步', 'right', 'outline', cache.length ? '' : 'disabled')}</div>
+    <section class="panel-section"><h3>可用局部变换</h3>${cache.length ?
       cache.slice(0, 30).map((r, i) => `<button class="rule-row" data-action="apply-rule" data-index="${i}"><span><b>${esc(r.title)}</b><small>${esc(r.names.join('、'))}</small></span>${icon('right', 15)}</button>`).join('') :
-      '<p class="secondary">当前选择没有可安全应用的变换。</p>'}</section>
+      '<p class="secondary">当前电路已无可继续安全化简的局部变换。</p>'}</section>
     ${doc.history.length ? `<section class="panel-section"><div class="section-head"><h3>步骤 ${index + 1} / ${doc.history.length}</h3><div class="action-row tiny">
       ${button('step-prev', '上一步', null, 'outline small', index > 0 ? '' : 'disabled')}
       ${button('step-next', '下一步', null, 'outline small', index + 1 < doc.history.length ? '' : 'disabled')}</div></div>
-      ${step ? `<h3>${esc(step.title)}</h3><p class="secondary">${esc(step.condition)}</p><div class="formula">${esc(step.formula)}</div>
-        <p>${esc(step.relationship)}</p>${note(`${esc(step.verification.label)} · ${compact(step.verification.residual)}`)}
-        ${mini(step.before, '变换前')}${mini(step.after, '变换后')}` : ''}</section>` : ''}`;
+      ${step ? `<h3>${esc(step.title)}</h3>
+        <p class="secondary"><strong>变换依据：</strong>${esc(step.basis || step.condition)}</p>
+        <div class="formula">${esc(step.formula)}</div>
+        ${step.calculations?.length > 1 ? table(['等效量', '计算结果'], step.calculations.map(c => [esc(c.elementName || c.symbol), esc(c.formatted)])) : ''}
+        <p>${esc(step.relationship)}</p>
+        ${note(`${esc(step.verification.method || '等价性验证')}：${esc(step.verification.label)} · 残差 ${compact(step.verification.residual)}`)}
+        ${continuityText ? `<p class="secondary">${esc(continuityText)}</p>` : ''}
+        ${mini(step.before, `变换前（高亮：${(step.removedNames || step.names || []).join('、')}）`, beforeHl)}
+        ${mini(step.after, `变换后（高亮：${(step.addedNames || []).join('、') || '已移除'}）`, afterHl)}` : ''}</section>` : ''}`;
 }

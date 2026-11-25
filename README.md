@@ -21,8 +21,12 @@ node server.mjs
 - **图片识别**　拖入、粘贴或选择 PNG、JPEG、WebP。支持斜向圆形电压源和矩形阻抗，读取电压相量、复阻抗和图中的源方向。原图面板标记元件与交叉点，可切换交叉点是否连接。核对数值、极性和连线后即可运行分析。
 - **文字与网表**　可输入「5 V 电压源、1 kΩ 电阻与 100 nF 电容串联，构成低通电路。」混合拓扑可逐支路描述，如「R1 1 kΩ 接在 in 与 out 之间」，也可粘贴下方网表。
 - **画布编辑**　点击或拖入元件，点击两个端口建立连接。双击元件可编辑数值，用 Enter 提交。右键或属性面板可旋转、镜像、改变参考方向、对调端口和断开连接。拖动空白区框选，按住 Space 平移，滚轮缩放，按 0 适应画布。
-- **分析与化简**　运行分析后切换右侧方法。化简可针对选中的元件，或对整张图推荐规则。每一步保留适用条件、公式、验证结果和前后电路图。规则会检查 `n1` 等自动编号节点能否消去，并保留命名的测量节点。
-- **保存与导出**　工程 JSON 保留几何、参数、识别记录和化简历史。SVG 保留可编辑的当前电路模型，回导时读取模型。PNG 用于插图。HTML 计算报告包含电路图、结果与原始数值数据。
+- **分析与化简**　运行分析后切换右侧方法。支持专用拓扑识别（惠斯通电桥及平衡判定、Δ/Π、Y/T 及三相 Δ–Y / Y–Δ / Y–Y / Δ–Δ）与对应自动排版。化简严格按单步局部等效变换执行，覆盖串并联（R/Z/L/C）、双向 Δ–Y / Y–Δ、平衡电桥去桥臂、电源互换与开短路。每步保留变换依据、公式与代入计算结果、视觉连续性指标、独立求解器双重验证（全电路 MNA + 多端口导纳/阻抗矩阵）以及高亮变化区域的前后电路图；自动化简内置有界前瞻路径规划与规范指纹循环检测，避免无意义反复变换。
+- **LLM / CLI / MCP 工具接口**　提供统一的确定性工具集（`src/tooling.js`），使 LLM 可直接读取、编辑、验证、识别拓扑、逐步化简、等价性校验和渲染电路：
+  - **CLI 命令行**：`node tools/circuitlab-cli.mjs tools` 查看全部 JSON Schema；`node tools/circuitlab-cli.mjs reduce-auto --example bridge --out-dir ./steps --format markdown` 逐步化简并导出每一步的高亮 SVG 与 Markdown 推导报告。
+  - **MCP Stdio 服务**：`node tools/circuitlab-cli.mjs mcp` 启动零依赖 JSON-RPC 2.0 MCP 服务，直接供支持 MCP 的 LLM 客户端调用。
+  - **本地 HTTP 工具 API**：启动 `node server.mjs` 后可通过 `GET /api/tools` 与 `POST /api/tools/<toolName>` 调用全部工具（仅绑定 `127.0.0.1`）。
+- **保存与导出**　工程 JSON 保留几何、参数、识别记录和化简历史。SVG 保留可编辑的当前电路模型并支持变化区域高亮样式，回导时读取模型。PNG 用于插图。HTML 计算报告包含电路图、结果与原始数值数据。
 
 ```text
 V1 in 0 DC 5 AC 1
@@ -49,7 +53,7 @@ C1 out 0 100n IC=0
 
 ## 验证
 
-`node --test` 有 32 项自动测试，覆盖图结构、模型往返、单位、电路解析解、布线、像素识别、斜向符号、复数标注和三相源闭环。
+`node --test` 有 43 项自动测试，覆盖图结构、模型往返、单位、电路解析解、布线、专用拓扑识别与布局（电桥、Δ/Y、三相 Δ–Y / Y–Δ）、逐步等效化简与视觉连续性、路径规划与循环检测、独立求解器等价性验证、变化区域高亮 SVG、LLM/CLI/MCP/HTTP 工具接口、像素识别、斜向符号、复数标注和三相源闭环。
 
 用 `node server.mjs 9133 --qa` 启动浏览器验收。全新检出可测试三张 OpenStax 图和三张 Fiore 重绘题。独立 RC 图和用户原图为本地附加样本，验收页会标记缺少的文件。使用 `?bundle` 可让三相验收加载已构建的单文件版。[本地验收页](http://127.0.0.1:9133/test/browser.html)
 
@@ -74,8 +78,8 @@ Windows Edge 实际检查了中文生成、画布双击修改与重算、手工�
 
 ## 工程结构
 
-浏览器原生 ES 模块实现界面和计算。Circuit IR 与几何布局分别存储，布线以端口为起点，布局过程同时校验图同构和渲染路径连通性。`src/model.js` 定义模型，`src/recognize.js` 识别图片，`src/layout.js` 与 `src/drawing.js` 生成图形，`src/analysis.js` 和 `src/reduce.js` 负责求解与化简。Node.js 服务只提供本地静态资源。
+浏览器原生 ES 模块实现界面和计算。Circuit IR 与几何布局分别存储，布线以端口为起点，布局过程同时校验图同构和渲染路径连通性。`src/model.js` 定义模型，`src/topology.js` 识别电桥、Δ/Y 与三相拓扑并生成规范结构指纹，`src/layout.js` 与 `src/drawing.js` 负责专用排版、视觉连续性保位与高亮 SVG 渲染，`src/analysis.js`、`src/verify.js` 与 `src/reduce.js` 负责求解、独立等价性验证与逐步化简路径规划，`src/tooling.js` 提供确定性 LLM 工具接口，`src/recognize.js` 识别图片。Node.js 服务同时提供本地静态资源与 `/api/tools` 本地工具接口。
 
 - `test/` 保存自动测试、浏览器验收页、可分发的样本及参考解。
-- `tools/make-three-phase-fixtures.mjs` 可重新生成三张三相测试图。
+- `tools/circuitlab-cli.mjs` 提供跨平台（Linux/macOS/Windows）CLI 与 MCP stdio 服务；`tools/make-three-phase-fixtures.mjs` 可重新生成三张三相测试图。
 - `dist/` 保存本地构建产物。
