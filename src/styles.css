@@ -130,6 +130,14 @@ small { font-size: 12px; }
 .element.selected { color: var(--accent); }
 .element.selected .element-hit { fill: #f3e5dbb0; stroke: #bc806c; stroke-width: 1.2; stroke-dasharray: 4 4; }
 .element.uncertain .element-hit { fill: #faeedaaa; stroke: #ac7d39; stroke-width: 1.2; stroke-dasharray: 4 4; }
+.highlight-region-before { fill: #c651321c; stroke: #c65132; stroke-width: 2; stroke-dasharray: 6 4; }
+.highlight-region-after { fill: #2a7d5c1c; stroke: #2a7d5c; stroke-width: 2; stroke-dasharray: 6 4; }
+.element.highlight-before, .label-highlight-before, .highlight-tag-before { color: #b44324; fill: #b44324; }
+.element.highlight-after, .label-highlight-after, .highlight-tag-after { color: #216b4e; fill: #216b4e; }
+.highlight-port-before { fill: none; stroke: #c65132; stroke-width: 2; }
+.highlight-port-after { fill: none; stroke: #2a7d5c; stroke-width: 2; }
+.toggle-row { display: flex; align-items: center; gap: 7px; margin: 6px 0 10px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.toggle-row input { width: auto; min-height: auto; accent-color: var(--accent); }
 .part-value { fill: #776d60; }
 .node-label, .label-selected { fill: #a05039; }
 .reference-marks, .coupling { color: #99553e; }

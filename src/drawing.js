@@ -1,5 +1,5 @@
 import { formatValue, snapshot, TYPES } from './model.js';
-import { route } from './layout.js';
+import { pinLocations, route } from './layout.js';
 
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -67,15 +67,75 @@ function references(e) {
      M${-39*e.voltageSign - 4}-12h8m-4-4v8M${39*e.voltageSign - 4}-12h8"/></g>`;
 }
 
+function normalizeHighlight(highlight) {
+  if (!highlight) return null;
+  const elements = highlight.elements instanceof Set ? highlight.elements : new Set(highlight.elements || []);
+  const ports = highlight.ports instanceof Set ? highlight.ports : new Set(highlight.ports || []);
+  const mode = highlight.mode === 'after' ? 'after' : 'before';
+  const region = highlight.region || null;
+  const label = highlight.label || '';
+  if (!elements.size && !ports.size && !region) return null;
+  return { elements, ports, mode, region, label };
+}
+
+function highlightMarkup(doc, drawing, hl) {
+  if (!hl) return '';
+  const boxes = [];
+  for (const id of hl.elements) {
+    const e = doc.elements.find(x => x.id === id);
+    const g = doc.geometry[id];
+    if (!e || !g) continue;
+    const pins = pinLocations(doc, e);
+    const xs = [g.x - 44, g.x + 44, ...pins.map(p => p.x)];
+    const ys = [g.y - 40, g.y + 40, ...pins.map(p => p.y)];
+    boxes.push({ x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) });
+  }
+  const region = boxes.length
+    ? {
+      x1: Math.min(...boxes.map(b => b.x1)) - 14,
+      y1: Math.min(...boxes.map(b => b.y1)) - 14,
+      x2: Math.max(...boxes.map(b => b.x2)) + 14,
+      y2: Math.max(...boxes.map(b => b.y2)) + 14,
+    }
+    : hl.region
+      ? { x1: hl.region.x1 - 14, y1: hl.region.y1 - 14, x2: hl.region.x2 + 14, y2: hl.region.y2 + 14 }
+      : null;
+
+  const regionSvg = region
+    ? `<rect class="highlight-region highlight-region-${hl.mode}" x="${region.x1}" y="${region.y1}" width="${region.x2 - region.x1}" height="${region.y2 - region.y1}" rx="12"/>`
+      + (hl.label ? `<text class="highlight-tag highlight-tag-${hl.mode}" x="${region.x1 + 8}" y="${region.y1 - 6}" font-size="12" font-weight="700">${esc(hl.label)}</text>` : '')
+    : '';
+
+  // Mark invariant boundary port pins/junctions
+  const portMarks = [];
+  const seenPos = new Set();
+  for (const portId of hl.ports) {
+    const pts = [
+      ...drawing.junctions.filter(j => j.node === portId),
+      ...drawing.pins.filter(p => p.node === portId && (hl.elements.size === 0 || hl.elements.has(p.id))),
+    ];
+    for (const pt of pts.slice(0, 2)) {
+      const k = `${pt.x},${pt.y}`;
+      if (seenPos.has(k)) continue;
+      seenPos.add(k);
+      portMarks.push(`<circle class="highlight-port highlight-port-${hl.mode}" cx="${pt.x}" cy="${pt.y}" r="6.5"/>`);
+    }
+  }
+
+  return `<g class="reduction-highlight">${regionSvg}${portMarks.join('')}</g>`;
+}
+
 export function scene(doc, drawing = route(doc), options = {}) {
-  const { interactive = false, selection = new Set(), pending, uncertain = new Set(), labels = true } = options;
+  const { interactive = false, selection = new Set(), pending, uncertain = new Set(), labels = true, highlight = null } = options;
+  const hl = normalizeHighlight(highlight);
   const shapes = doc.elements.map(e => {
     const { x, y, rotation, mirror } = doc.geometry[e.id];
-    const klass = selection.has(e.id) ? ' selected' : uncertain.has(e.id) ? ' uncertain' : '';
+    const isHl = hl?.elements.has(e.id);
+    const klass = (selection.has(e.id) ? ' selected' : uncertain.has(e.id) ? ' uncertain' : '') + (isHl ? ` highlight-${hl.mode}` : '');
     return `<g class="element${klass}" ${interactive ? `data-element="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.name)} ${TYPES[e.type].label}"` : ''}
       transform="translate(${x} ${y}) rotate(${rotation}) scale(${mirror ? -1 : 1} 1)">
       ${interactive ? `<rect class="element-hit" x="-43" y="${e.type === 'GND' ? -26 : -33}" width="86" height="${e.type === 'GND' ? 48 : 66}" rx="9"/>` : ''}
-      <g stroke="currentColor" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${paths[e.type]}${['V', 'E', 'H'].includes(e.type) ? signs(rotation) : ''}${references(e)}</g>
+      <g stroke="currentColor" fill="none" stroke-width="${isHl ? 3.1 : 2.5}" stroke-linecap="round" stroke-linejoin="round">${paths[e.type]}${['V', 'E', 'H'].includes(e.type) ? signs(rotation) : ''}${references(e)}</g>
     </g>`;
   }).join('');
   const names = doc.elements.map(e => {
@@ -91,7 +151,9 @@ export function scene(doc, drawing = route(doc), options = {}) {
     const currentControl = ['F', 'H'].includes(e.type) ? doc.elements.find(c => c.id === e.control)?.name : '';
     const control = ['E', 'G'].includes(e.type) ? `v(${nodeLabel(e.terminals.cp)}, ${nodeLabel(e.terminals.cn)})` : currentControl ? `i(${currentControl})` : '';
     const details = control ? `${suffix} · ${control}` : suffix;
-    return `<text class="part-label${selection.has(e.id) ? ' label-selected' : ''}" ${interactive ? `data-element="${esc(e.id)}"` : ''} x="${p.x}" y="${p.y}" text-anchor="${p.align}">
+    const isHl = hl?.elements.has(e.id);
+    const labelKlass = (selection.has(e.id) ? ' label-selected' : '') + (isHl ? ` label-highlight-${hl.mode}` : '');
+    return `<text class="part-label${labelKlass}" ${interactive ? `data-element="${esc(e.id)}"` : ''} x="${p.x}" y="${p.y}" text-anchor="${p.align}">
       <tspan font-weight="700">${esc(e.name)}</tspan>${details ? `<tspan class="part-value" x="${p.x}" dy="21" font-size="15">${esc(details)}</tspan>` : ''}</text>`;
   }).join('');
   const pins = drawing.pins.map(p => {
@@ -116,19 +178,31 @@ export function scene(doc, drawing = route(doc), options = {}) {
   }).join('');
   const nodeLabels = drawing.nodeLabels.map(p => `<text class="node-label" x="${p.x + 11}" y="${p.y - 14}" font-weight="600" font-size="15">${esc(p.label)}</text>`).join('');
   return `<g color="#302c28" fill="currentColor" font-family="Consolas, monospace" font-size="16">
-    ${wireMarkup(drawing, interactive)}${shapes}${labels ? names + nodeLabels : ''}${coupling}${pins}
+    ${highlightMarkup(doc, drawing, hl)}${wireMarkup(drawing, interactive)}${shapes}${labels ? names + nodeLabels : ''}${coupling}${pins}
     ${doc.annotations.map(a => `<text class="annotation" x="${a.x}" y="${a.y}" font-size="14">${esc(a.text)}</text>`).join('')}
   </g>`;
 }
 
-export function exportSvg(doc, { embedModel = true } = {}) {
+export const HIGHLIGHT_CSS = [
+  '.part-value{fill:#6e665b}',
+  '.node-label,.reference-marks,.coupling{color:#9b4c37;fill:#9b4c37}',
+  '.highlight-region-before{fill:#c651321c;stroke:#c65132;stroke-width:2;stroke-dasharray:6 4}',
+  '.highlight-region-after{fill:#2a7d5c1c;stroke:#2a7d5c;stroke-width:2;stroke-dasharray:6 4}',
+  '.element.highlight-before,.label-highlight-before,.highlight-tag-before{color:#b44324;fill:#b44324}',
+  '.element.highlight-after,.label-highlight-after,.highlight-tag-after{color:#216b4e;fill:#216b4e}',
+  '.highlight-port-before{fill:none;stroke:#c65132;stroke-width:2}',
+  '.highlight-port-after{fill:none;stroke:#2a7d5c;stroke-width:2}',
+].join('');
+
+export function exportSvg(doc, { embedModel = true, highlight = null, labels = true } = {}) {
   const drawing = route(doc);
   const { x, y, right, bottom } = drawing.bounds;
-  const width = right - x + 64;
-  const height = bottom - y + 64;
-  return `<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="${x - 32} ${y - 32} ${width} ${height}" width="${width}" height="${height}">
+  const pad = highlight ? 48 : 32;
+  const width = right - x + pad * 2;
+  const height = bottom - y + pad * 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="${x - pad} ${y - pad} ${width} ${height}" width="${width}" height="${height}">
     <title>${esc(doc.title)}</title>${embedModel ? `<metadata id="circuitlab-ir">${esc(JSON.stringify({ ...snapshot(doc), history: [] }))}</metadata>` : ''}
-    <style>.part-value{fill:#6e665b}.node-label,.reference-marks,.coupling{color:#9b4c37;fill:#9b4c37}</style>
-    <rect x="${x - 32}" y="${y - 32}" width="${width}" height="${height}" fill="#fff"/>${scene(doc, drawing)}
+    <style>${HIGHLIGHT_CSS}</style>
+    <rect x="${x - pad}" y="${y - pad}" width="${width}" height="${height}" fill="#fff"/>${scene(doc, drawing, { highlight, labels })}
   </svg>`;
 }

@@ -8,6 +8,8 @@ export const EXAMPLES = [
   { id: 'bridge', name: '惠斯通电桥', type: '多回路网络', icon: 'nodes' },
   { id: 'op', name: '理想反相放大器', type: '受控线性网络', icon: 'opamp' },
   { id: 'three', name: '星形三相负载', type: '正弦稳态', icon: 'ac' },
+  { id: 'deltaY', name: '三相 Δ–Y 网络', type: 'Δ-Y 拓扑', icon: 'nodes' },
+  { id: 'balancedBridge', name: '平衡惠斯通电桥', type: '平衡电桥化简', icon: 'nodes' },
 ];
 
 export function example(id = 'rc') {
@@ -28,6 +30,8 @@ export function example(id = 'rc') {
     bridge: 'V1 in 0 10\nR1 in a 1k\nR2 a 0 2k\nR3 in b 1k\nR4 b 0 3k\nR5 a b 1k',
     op: 'V1 in 0 DC 1 AC 1\nR1 in minus 1k\nR2 minus out 4k\nU1 0 minus out 0\nR3 out 0 10k',
     three: 'V3_1 A B C 0 220\nR1 A 0 20\nR2 B 0 30\nR3 C 0 40',
+    deltaY: 'V1 A B DC 0 AC 200 0\nV2 B C DC 0 AC 200 -120\nV3 C A DC 0 AC 200 -240\nZ1 A 0 8.660254 5\nZ2 B 0 8.660254 5\nZ3 C 0 8.660254 5',
+    balancedBridge: 'V1 in 0 12\nR1 in a 1k\nR2 a 0 2k\nR3 in b 2k\nR4 b 0 4k\nR5 a b 1.5k',
   };
   return parseNetlist(listings[id], meta.name);
 }
